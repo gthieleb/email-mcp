@@ -21,6 +21,13 @@ import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js';
 
 export type SyncTier = 'qresync' | 'condstore' | 'baseline';
 
+/**
+ * Rows per `putMessages` transaction. Sized so a single chunk stays well
+ * under any sane probe timeout even on slow storage, while keeping per-chunk
+ * transaction overhead negligible next to the write itself.
+ */
+export const PUT_CHUNK_SIZE = 200;
+
 /** A message as handed to the store for persistence. */
 export interface CachedMessageInput {
   account: string;
@@ -267,8 +274,16 @@ export default class CacheStore {
    *
    * An already-downloaded body is preserved: a metadata resync (a flag change,
    * say) must not discard content and force a second download.
+   *
+   * Writes are chunked and the event loop is yielded between chunks.
+   * `node:sqlite` is synchronous, so one giant transaction (as earlier
+   * revisions did for the whole batch) blocks the loop for the entire write —
+   * in containerized cold starts that stalled `/healthz` past the liveness
+   * probe, and the mid-transaction kill rolled the whole batch back, forcing
+   * another full sync on the next boot (infinite crash loop). Chunking keeps
+   * the loop responsive and preserves partial progress.
    */
-  putMessages(messages: CachedMessageInput[]): void {
+  async putMessages(messages: CachedMessageInput[]): Promise<void> {
     if (messages.length === 0) return;
 
     const stmt = this.db.prepare(`
@@ -296,29 +311,35 @@ export default class CacheStore {
     `);
 
     const now = Date.now();
-    this.transaction(() => {
-      messages.forEach((m) => {
-        stmt.run(
-          m.account,
-          m.mailbox,
-          m.uid,
-          m.uidValidity,
-          m.modseq ?? null,
-          JSON.stringify(m.envelope),
-          m.bodyStructure ? JSON.stringify(m.bodyStructure) : null,
-          JSON.stringify(m.flags),
-          m.messageId ?? null,
-          m.inReplyTo ?? null,
-          m.references ? JSON.stringify(m.references) : null,
-          m.internalDate,
-          m.subject ?? null,
-          m.fromText ?? null,
-          m.preview ?? null,
-          m.hasAttachments ? 1 : 0,
-          now,
-        );
+    for (let offset = 0; offset < messages.length; offset += PUT_CHUNK_SIZE) {
+      const chunk = messages.slice(offset, offset + PUT_CHUNK_SIZE);
+      this.transaction(() => {
+        for (const m of chunk) {
+          stmt.run(
+            m.account,
+            m.mailbox,
+            m.uid,
+            m.uidValidity,
+            m.modseq ?? null,
+            JSON.stringify(m.envelope),
+            m.bodyStructure ? JSON.stringify(m.bodyStructure) : null,
+            JSON.stringify(m.flags),
+            m.messageId ?? null,
+            m.inReplyTo ?? null,
+            m.references ? JSON.stringify(m.references) : null,
+            m.internalDate,
+            m.subject ?? null,
+            m.fromText ?? null,
+            m.preview ?? null,
+            m.hasAttachments ? 1 : 0,
+            now,
+          );
+        }
       });
-    });
+      // Yield to pending I/O, timers and probes before the next chunk. The
+      // final yield is harmless; skipping the branch would only save one tick.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
 
   /** Attach a downloaded body to an existing message. */
