@@ -1,4 +1,4 @@
-import CacheStore from './store.js';
+import CacheStore, { PUT_CHUNK_SIZE } from './store.js';
 
 function makeMessage(overrides: Record<string, unknown> = {}) {
   return {
@@ -29,8 +29,8 @@ describe('CacheStore', () => {
   });
 
   describe('messages', () => {
-    it('round-trips a message', () => {
-      store.putMessages([makeMessage()]);
+    it('round-trips a message', async () => {
+      await store.putMessages([makeMessage()]);
 
       const found = store.getMessage('work', 'INBOX', 1, '100');
 
@@ -42,37 +42,72 @@ describe('CacheStore', () => {
       });
     });
 
-    it('returns undefined for a message from a different UIDVALIDITY', () => {
-      store.putMessages([makeMessage({ uidValidity: '100' })]);
+    it('returns undefined for a message from a different UIDVALIDITY', async () => {
+      await store.putMessages([makeMessage({ uidValidity: '100' })]);
 
       // Same UID, new epoch — this is a different message entirely.
       expect(store.getMessage('work', 'INBOX', 1, '999')).toBeUndefined();
     });
 
-    it('upserts rather than duplicating on re-sync', () => {
-      store.putMessages([makeMessage({ flags: ['\\Seen'] })]);
-      store.putMessages([makeMessage({ flags: ['\\Seen', '\\Flagged'] })]);
+    it('upserts rather than duplicating on re-sync', async () => {
+      await store.putMessages([makeMessage({ flags: ['\\Seen'] })]);
+      await store.putMessages([makeMessage({ flags: ['\\Seen', '\\Flagged'] })]);
 
       expect(store.getMessage('work', 'INBOX', 1, '100')?.flags).toEqual(['\\Seen', '\\Flagged']);
       expect(store.countMessages('work', 'INBOX')).toBe(1);
     });
 
-    it('preserves an already-fetched body when re-syncing metadata', () => {
-      store.putMessages([makeMessage()]);
+    it('preserves an already-fetched body when re-syncing metadata', async () => {
+      await store.putMessages([makeMessage()]);
       store.putBody('work', 'INBOX', 1, '100', 'the full body text');
 
       // A metadata resync (e.g. a flag change) must not wipe the body and
       // force another download.
-      store.putMessages([makeMessage({ flags: ['\\Seen', '\\Flagged'] })]);
+      await store.putMessages([makeMessage({ flags: ['\\Seen', '\\Flagged'] })]);
 
       expect(store.getMessage('work', 'INBOX', 1, '100')?.bodyText).toBe('the full body text');
     });
   });
 
+  describe('chunked writes', () => {
+    it('stores more rows than one chunk across multiple transactions', async () => {
+      const total = PUT_CHUNK_SIZE * 2 + 7;
+      await store.putMessages(
+        Array.from({ length: total }, (_, i) =>
+          makeMessage({ uid: i + 1, messageId: `<${i + 1}@example.com>` }),
+        ),
+      );
+
+      expect(store.countMessages('work', 'INBOX')).toBe(total);
+    });
+
+    it('yields to the event loop between chunks', async () => {
+      // node:sqlite is synchronous; the chunking contract is that a large
+      // putMessages must not monopolize the loop — timers must tick while it
+      // runs (this is what keeps /healthz responsive during a cold-start
+      // mirror rebuild; see gthieleb/email-mcp#2).
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks += 1;
+      }, 1);
+      try {
+        await store.putMessages(
+          Array.from({ length: PUT_CHUNK_SIZE * 2 + 1 }, (_, i) =>
+            makeMessage({ uid: i + 1, messageId: `<tick-${i + 1}@example.com>` }),
+          ),
+        );
+      } finally {
+        clearInterval(timer);
+      }
+
+      expect(ticks).toBeGreaterThan(0);
+    });
+  });
+
   describe('pagination', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       const base = Date.parse('2026-08-01T10:00:00Z');
-      store.putMessages(
+      await store.putMessages(
         Array.from({ length: 25 }, (_, i) =>
           makeMessage({
             uid: i + 1,
@@ -102,8 +137,8 @@ describe('CacheStore', () => {
   });
 
   describe('full-text search', () => {
-    it('finds a message by body text', () => {
-      store.putMessages([makeMessage({ uid: 1, subject: 'Rechnung' })]);
+    it('finds a message by body text', async () => {
+      await store.putMessages([makeMessage({ uid: 1, subject: 'Rechnung' })]);
       store.putBody('work', 'INBOX', 1, '100', 'Anbei die Rechnung für August.');
 
       const hits = store.searchMessages('work', 'INBOX', '100', 'Rechnung');
@@ -111,8 +146,8 @@ describe('CacheStore', () => {
       expect(hits.map((m) => m.uid)).toEqual([1]);
     });
 
-    it('does not return a message after it is purged', () => {
-      store.putMessages([makeMessage({ uid: 1 })]);
+    it('does not return a message after it is purged', async () => {
+      await store.putMessages([makeMessage({ uid: 1 })]);
       store.putBody('work', 'INBOX', 1, '100', 'findable text');
       store.deleteMessages('work', 'INBOX', [1], '100');
 
@@ -142,14 +177,14 @@ describe('CacheStore', () => {
       expect(state?.syncTier).toBe('qresync');
     });
 
-    it('purges every message of the old epoch when UIDVALIDITY changes', () => {
+    it('purges every message of the old epoch when UIDVALIDITY changes', async () => {
       store.putMailboxState({
         account: 'work',
         mailbox: 'INBOX',
         uidValidity: '100',
         syncTier: 'baseline',
       });
-      store.putMessages([makeMessage({ uid: 1 }), makeMessage({ uid: 2 })]);
+      await store.putMessages([makeMessage({ uid: 1 }), makeMessage({ uid: 2 })]);
 
       const purged = store.resetEpoch('work', 'INBOX', '200');
 
@@ -158,8 +193,8 @@ describe('CacheStore', () => {
       expect(store.getMailboxState('work', 'INBOX')?.uidValidity).toBe('200');
     });
 
-    it('leaves other mailboxes untouched when one epoch resets', () => {
-      store.putMessages([
+    it('leaves other mailboxes untouched when one epoch resets', async () => {
+      await store.putMessages([
         makeMessage({ uid: 1, mailbox: 'INBOX' }),
         makeMessage({ uid: 1, mailbox: 'Archive' }),
       ]);
