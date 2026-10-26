@@ -1,0 +1,16 @@
+# HTTP transport override for supergateway-based image.
+# Docker Compose auto-merges this file with docker-compose.yml.
+#
+# This binds the HTTP sidecar to the Tailscale IP so it is reachable
+# across the tailnet (e.g. from Hermes / other hosts).
+#
+# Usage (auto-merged, no extra flags needed):
+#   docker compose --profile http up -d
+#
+# To disable again:
+#   rm docker-compose.override.yml
+
+services:
+  email-mcp-http:
+    ports:
+      - "100.108.41.111:15002:8080"
