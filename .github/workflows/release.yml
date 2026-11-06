@@ -65,7 +65,7 @@ jobs:
       # bump deliberately, not via `latest`.
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
 
       - name: Docker setup
         uses: codefuturist/shared-workflows/actions/docker-setup@v1
@@ -82,7 +82,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser-pro
-          version: "~> 2.18"
+          version: "~> 2.20.0"
           args: release --clean ${{ inputs.version && '--skip=validate' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
