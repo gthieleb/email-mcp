@@ -1,4 +1,19 @@
 # pnpm 11 settings (camelCase; the package.json "pnpm" field is no longer read).
+
+# Supply-chain gate: pnpm 11+ rejects packages younger than 24h by default.
+# Stated explicitly so the policy is visible instead of depending on a pnpm default,
+# and because CI runs `pnpm install --frozen-lockfile`, which re-verifies every
+# already-pinned lockfile entry against this cutoff.
+minimumReleaseAge: 1440
+# Renovate resolves these three to the newest release, so the age gate would
+# otherwise reject every fresh lockfile in CI (imapflow/nodemailer/socks land
+# within hours of their publish date). Keep in sync with renovate.json, which
+# holds the same 1-day rule for everything Renovate decides to update.
+minimumReleaseAgeExclude:
+  - imapflow
+  - nodemailer
+  - socks
+
 # Dependencies allowed to run install/build scripts (supply-chain gate).
 allowBuilds:
   cpu-features: true
