@@ -240,7 +240,8 @@ export default class ConnectionManager implements IConnectionManager {
           messages: true,
           unseen: true,
         });
-        messageCount = inbox.messages ?? 0;
+        // imapflow >=2.5 returns `false` when the server rejects STATUS.
+        messageCount = inbox ? (inbox.messages ?? 0) : 0;
       } catch {
         // INBOX may not exist (e.g. Google Workspace uses "All Mail")
         if (mailboxes.length > 0) {
@@ -248,7 +249,7 @@ export default class ConnectionManager implements IConnectionManager {
             const first = await client.status(mailboxes[0].path, {
               messages: true,
             });
-            messageCount = first.messages ?? 0;
+            messageCount = first ? (first.messages ?? 0) : 0;
           } catch {
             /* ignore — connection still works */
           }
