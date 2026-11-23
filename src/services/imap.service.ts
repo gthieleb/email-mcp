@@ -427,6 +427,12 @@ export default class ImapService {
           messages: true,
           unseen: true,
         });
+        // imapflow >=2.5 returns `false` when the server rejects STATUS for a
+        // mailbox. Treat a rejection like a failed request so the caller gets
+        // `undefined` counts instead of a thrown TypeError.
+        if (!status) {
+          throw new Error(`STATUS rejected for mailbox ${mb.path}`);
+        }
         return {
           name: mb.name,
           path: mb.path,
